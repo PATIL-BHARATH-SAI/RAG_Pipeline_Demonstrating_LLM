@@ -1,0 +1,1 @@
+"""Omni-fetch core package."""

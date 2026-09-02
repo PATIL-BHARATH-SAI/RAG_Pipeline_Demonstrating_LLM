@@ -1,0 +1,155 @@
+# Omni-fetch — Local & Modular RAG Upgrade Plan
+
+## Overview
+This plan upgrades the Omni-fetch RAG architecture into a fully modular, extensible, and **100% free/local-first runnable system**. Based on your requirements and `OmniFred_Upgrade_Plan.md`, we are replacing all cloud-dependent dependencies (**NeMo Guardrails**, **Portkey Gateway**, and **Qdrant Cloud**) with robust, zero-cost, open-source local equivalents:
+
+| Cloud Component | Replaced With (100% Free / Local / Open-Source) |
+|---|---|
+| **NeMo Guardrails / Cloud Guardrails** | **Local Guardrails Engine** (`app/guardrails/local_guard.py`): Pure local regex + semantic embedding + lightweight ONNX/Rule-based jailbreak, PII masking, and schema validation. Zero external cloud API calls required. |
+| **Portkey AI Gateway** | **Local LLM Resilience Gateway** (`app/gateway/local_gateway.py`): Local multi-model router with automatic fallback (Local Ollama / Local HuggingFace / Gemini free tier / mock local fallback), retry exponential backoff, rate limiter, and local SQLite audit ledger. |
+| **Qdrant Cloud** | **Local Vector Store Ecosystem** (`app/services/retrieval/vectorstore/`): Embedded Local Qdrant (`path="./data/qdrant_db"`), Local ChromaDB (`PersistentClient`), and In-Memory/Disk FAISS (`faiss-cpu`). |
+
+---
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Default Local-First Configuration**:
+> - Embeddings default to `local` (`sentence-transformers/all-MiniLM-L6-v2` or `all-mpnet-base-v2` downloaded and cached locally).
+> - Vector DB defaults to `chroma` / `qdrant-embedded` (storing vectors directly to local disk in `./data/`).
+> - LLM Gateway defaults to local Ollama / local fallback / Gemini API key if present.
+> - All packages used will be freely pip-installable (`chromadb`, `faiss-cpu`, `qdrant-client`, `sentence-transformers`, `flashrank`, `langgraph`, `pydantic`).
+
+---
+
+## Architecture & Modular Components
+
+```
+Omni-fetch-RAG-Project/
+├── app/
+│   ├── config.py                         # Unified configuration with dynamic strategy selection
+│   ├── ingestion/
+│   │   ├── loaders/                      # PDF, DOCX, TXT, Markdown, PPTX loaders
+│   │   │   ├── base.py
+│   │   │   ├── document_loader.py
+│   │   │   └── pdf_loader.py
+│   │   ├── chunking/                     # [Step 1] Pluggable chunking strategies
+│   │   │   ├── base.py                   # Chunker abstract base class
+│   │   │   ├── paragraph.py              # Paragraph-based chunker
+│   │   │   ├── fixed_size.py             # Character/token sliding window + overlap
+│   │   │   ├── recursive.py              # Recursive character splitter
+│   │   │   ├── semantic.py               # Embedding cosine-distance breakpoint chunker
+│   │   │   └── factory.py                # get_chunker(strategy_name)
+│   │   └── processor.py                  # Ingestion runner / CLI data pipeline
+│   ├── services/
+│   │   └── retrieval/
+│   │       ├── embeddings/               # [Step 2] Pluggable embedding providers
+│   │       │   ├── base.py               # EmbeddingProvider base interface (embed_query, embed_texts, dim)
+│   │       │   ├── local_provider.py     # sentence-transformers (all-MiniLM-L6-v2, all-mpnet-base-v2)
+│   │       │   ├── gemini_provider.py    # Google Gemini free-tier embedding
+│   │       │   ├── ollama_provider.py    # Local Ollama embedding provider (e.g. nomic-embed-text)
+│   │       │   └── factory.py            # get_embedding_provider(name)
+│   │       ├── vectorstore/              # [Step 3] Swappable Local Vector Stores
+│   │       │   ├── base.py               # VectorStore base interface (upsert, search, delete, count)
+│   │       │   ├── qdrant_store.py       # Embedded local disk / memory Qdrant
+│   │       │   ├── chroma_store.py       # Local persistent ChromaDB
+│   │       │   ├── faiss_store.py        # Local fast FAISS index
+│   │       │   └── factory.py            # get_vectorstore(name)
+│   │       ├── ranking_service.py        # Local FlashRank / Cross-Encoder reranking
+│   │       └── similarity.py             # [Step 4] Cosine/Euclidean/Dot similarity to % normalization
+│   ├── gateway/                          # Local Portkey Replacement
+│   │   ├── base.py
+│   │   ├── local_gateway.py              # Circuit breaker, model routing, fallback chain & SQLite ledger
+│   │   └── router.py
+│   ├── guardrails/                       # Local NeMo Replacement
+│   │   ├── base.py
+│   │   ├── local_guard.py                # Injection detection, PII scrubbing, content moderation
+│   │   └── rules.py
+│   ├── agents/                           # LangGraph Agent Pipeline
+│   │   ├── state.py                      # Agent state definition
+│   │   ├── planner.py                    # Query decomposer & search planner
+│   │   ├── retriever.py                  # Multi-store retriever & reranker
+│   │   ├── responder.py                  # Guardrail-checked synthesis
+│   │   └── graph.py                      # Compiled LangGraph workflow
+│   └── main.py                           # CLI / API entrypoint
+├── evals/                                # [Step 6] Evaluation & Benchmarking
+│   ├── benchmark_embeddings.py           # Dim, latency & quality benchmarks across providers
+│   ├── benchmark_chunking.py             # Retrieval recall test across chunk strategies
+│   └── rag_eval.py                       # Local RAG metrics (faithfulness, answer relevance, context recall)
+├── ui/
+│   └── app.py                            # Streamlit / Web UI with match % display and strategy selectors
+├── requirements.txt                      # 100% free open-source dependency list
+└── tests/
+    ├── test_chunking.py
+    ├── test_embeddings.py
+    ├── test_vectorstores.py
+    ├── test_guardrails.py
+    └── test_similarity.py
+```
+
+---
+
+## Proposed Step-by-Step Implementation
+
+### Step 1: Pluggable Chunking Strategy Package (`app/ingestion/chunking/`)
+- Implement `BaseChunker` interface with `chunk(text: str, metadata: dict) -> list[Chunk]`.
+- Implement `ParagraphChunker`, `FixedSizeChunker`, `RecursiveChunker`, and `SemanticChunker` (cosine distance threshold between adjacent sentences).
+- Implement `ChunkerFactory.get_chunker(strategy_name)` with validation.
+- Connect `processor.py` to use `ChunkerFactory`.
+
+### Step 2: Multi-Provider Embedding Registry (`app/services/retrieval/embeddings/`)
+- Implement `BaseEmbeddingProvider` specifying `embed_query()`, `embed_texts()`, and `dim` property.
+- Implement `LocalEmbeddingProvider` using `sentence-transformers` (runs completely offline, CPU/GPU, zero cost).
+- Implement `OllamaEmbeddingProvider` for local Ollama models (`nomic-embed-text`, `bge-m3`).
+- Implement `GeminiEmbeddingProvider` with automatic fallback to local embedding if offline.
+- Implement `EmbeddingFactory` and embedding dimension tracking.
+
+### Step 3: Local Swappable Vector Stores (`app/services/retrieval/vectorstore/`)
+- Implement `BaseVectorStore` interface (`upsert`, `search`, `delete`, `count`).
+- **Local Embedded Qdrant** (`qdrant_store.py`): Uses `QdrantClient(path="./data/qdrant_db")` — zero cloud needed.
+- **Local ChromaDB** (`chroma_store.py`): Uses `chromadb.PersistentClient(path="./data/chroma_db")`.
+- **Local FAISS Store** (`faiss_store.py`): In-memory index with serialization to `./data/faiss_index/`.
+- Implement `VectorStoreFactory.get_vectorstore(name, embedding_provider)`.
+
+### Step 4: Similarity Score Normalization (`app/services/retrieval/similarity.py`)
+- Implement conversion functions to format match percentages accurately:
+  - Cosine Similarity $[-1, 1] \to [0, 100\%]$
+  - Dot Product normalized by vectors magnitudes $\to [0, 100\%]$
+  - Euclidean Distance $1 / (1 + d) \to [0, 100\%]$
+- Enrich search outputs with both `raw_score` and `similarity_pct` (e.g., `89.4% Match`).
+
+### Step 5: Local Gateway & Local Guardrails (`app/gateway/`, `app/guardrails/`)
+- **Local Gateway**: Multi-model fallback router (Ollama -> Gemini Free Tier -> Local fallback model) with retry, timeout protection, and SQLite audit log.
+- **Local Guardrails**: Input jailbreak/prompt injection detection, regex-based PII mask (emails, credit cards, phones, SSNs), and output boundary validator.
+
+### Step 6: LangGraph Agent & Config Integration (`app/agents/`, `app/config.py`)
+- Wire `CHUNK_STRATEGY`, `EMBEDDING_PROVIDER`, `VECTOR_DB`, and `LLM_PROVIDER` in `app/config.py`.
+- Compile LangGraph StateGraph connecting the dynamic retriever, FlashRank reranker, local guardrails, and synthesizer.
+
+### Step 7: Benchmarking & Evaluation Suite (`evals/`)
+- Add `benchmark_embeddings.py` to compare latency, vector dimension, and embedding quality.
+- Add `benchmark_chunking.py` to evaluate chunking retrieval recall on sample corpus.
+- Add RAG evaluation script.
+
+### Step 8: Ponytail Review & Codebase Streamlining
+- Apply the **Ponytail Master** skill rules across all created modules:
+  - Strip redundant boilerplate and keep code clean, human-readable, and idiomatic.
+  - Mark deliberate design choices with `# ponytail:` triggers.
+
+---
+
+## Verification Plan
+
+### Automated Tests
+- Run `pytest tests/` covering:
+  1. Chunking output integrity for all 4 chunking strategies.
+  2. Embeddings generation and dimension verification for local providers.
+  3. Vector store upsert, search, and metadata filtering for Chroma, FAISS, and Local Qdrant.
+  4. Similarity score conversion math verification across edge cases ($1.0, 0.0, -1.0$).
+  5. Local guardrails injection detection and PII scrubbing tests.
+  6. End-to-end LangGraph query answering flow.
+
+### Manual Verification
+- Ingest a sample markdown/document dataset using `python -m app.ingestion.processor`.
+- Execute search query with different combinations of `VECTOR_DB=chroma`, `VECTOR_DB=faiss`, and `VECTOR_DB=qdrant`.
+- Verify similarity percentage (e.g. `92.5%`) displayed in search responses.
